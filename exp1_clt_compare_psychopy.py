@@ -69,8 +69,7 @@ COLORS_RGB = [
 def get_subject_info(win):
     """弹出对话框收集被试信息，并显示自动生成的 SubjectID"""
     dlg = gui.Dlg(title='实验设置')
-    dlg.addField('组别 (1=先FCDT后CLT, 2=先CLT后FCDT):', choices=['1', '2'])
-    dlg.addField('调试模式 (0=调试, 1=正式):', choices=['1', '0'])
+    dlg.addField('组别 (0=调试, 1=先FCDT后CLT, 2=先CLT后FCDT):', choices=['1', '2', '0'])
     dlg.addField('Subject ID (留空自动生成):', '')
     
     dlg.show()
@@ -78,8 +77,7 @@ def get_subject_info(win):
         core.quit()
     
     sub_group = int(dlg.data[0])
-    debug_mode = (dlg.data[1] == '0')
-    subject_id = dlg.data[2].strip()
+    subject_id = dlg.data[1].strip()
     
     # 自动生成 SubjectID: {组别}_{3位点击顺序}_{3位随机后缀}
     if not subject_id:
@@ -88,7 +86,7 @@ def get_subject_info(win):
         subject_id = f"{sub_group}_{click_order:03d}_{suffix}"
     
     # 调试模式固定编号
-    if debug_mode:
+    if sub_group == 0:
         subject_id = '1111'
     
     # 显示 SubjectID 确认页面
@@ -102,9 +100,9 @@ def get_subject_info(win):
     
     return {
         'subGroup': sub_group,
-        'debugMode': debug_mode,
+        'debugMode': sub_group == 0,
         'subjectID': subject_id,
-        'rndSeed': 1111 if debug_mode else hash(subject_id) % 2**31,
+        'rndSeed': 1111 if sub_group == 0 else hash(subject_id) % 2**31,
         'expDate': datetime.datetime.now().strftime('%Y%m%d')
     }
 

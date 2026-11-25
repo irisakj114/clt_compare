@@ -20,23 +20,22 @@
 //   不设「低正确率自动结束」：无论正确率高低，实验都完整跑完 4 个 block
 //   低正确率只做标记（详见下方「低正确率标记」段）
 //
-// 调试模式（被试信息四个输入框全部填 1，隐藏触发）：
-//   正式实验只运行 1 个 block、5 个 trial；练习仍为 15 trial，跳过 block 间休息
-//   被试编号与随机种子固定为 1111，导出文件名固定为 exp1_clt_1111.xlsx
+// 调试模式：组别填 0 进入调试；1 为正式。调试模式固定 SubjectID 与种子为 1111，
+// 便于识别与复现。正式模式自动生成：{subGroup}_{3位点击顺序}_{3位随机后缀}。
+// 人口学信息改为在 Credamo 另行收集，本程序不再采集。
 //
 // 低正确率标记（导出文件名前加 F，不改变实验流程）：
 //   判定条件：set size = 3 或 4 时，「呈现时长 ≥ 200 ms」试次的正确率低于 50%
 //   （set size 3 和 4 分别计算，任一低于 50% 即触发；set size = 6 不参与判定）
 //   触发的条件行会在 K 值表中以「LowAccRed = 1」标记（标红功能受 XLSX 版本所限，见下）
 //
-// 导出（Excel，3 个 sheet，调试模式与正式实验规则完全一致）：
-//   文件名：实验名称_被试编号（exp1_clt_编号）；
-//           存在低正确率条件时在最前面加 F（如 Fexp1_clt_0112345678.xlsx）；
-//           调试模式不加 F（实验名称仍为 exp1_clt）
+// 导出（Excel，4 个 sheet，调试模式与正式实验规则完全一致）：
+//   文件名：实验名称_被试编号（如 exp1_clt_compare_1_023_abc.xlsx）；
+//           存在低正确率条件时在最前面加 F；调试模式不做该判定。
 //   Sheet1「Trial Data」：全部 trial，按实验实际发生顺序排列
-//                        （含计划呈现时长 studyDuration 与实测值 studyDurationActual）
-//                        超时试次（4000 ms 内未点击）以 TrialStatus = 'timeout'、
-//                        CountedInK = 0 明确标记；正常反应为 'valid' / 1
+//   Sheet2「K Values」：条件级正确率 / 容量 K / 两种超时口径
+//   Sheet3「ColorAccuracy」：每个颜色在每个 set size 下的正确率
+//   Sheet4「Grouped Trials」：按「呈现时长 → set size」分组重排
 //   Sheet2「K Values」：按「set size × 呈现时长」拆分的 12 个条件各一行，
 //                      给出正确率、正确试次平均反应时与容量 K；
 //                      末尾再附每个 set size 的汇总行（StudyDuration 记为「汇总」）；
@@ -76,15 +75,14 @@ const SESSION_ID = (globalThis.crypto && typeof globalThis.crypto.randomUUID ===
 
 // 运行版本标记（与 exp1_clt.html 中 exp1_clt.js?v= 保持一致）：
 // 用于确认浏览器实际加载的是最新代码，而非缓存里的旧版本
-const EXP1_CLT_BUILD = '20261123compare-circle1';
+const EXP1_CLT_BUILD = '20261125compare-clean2';
 console.log('[exp1_clt] build ' + EXP1_CLT_BUILD + ' loaded');
 
-// 页面上的 build 角标已移除（避免被试在设置页看到版本号），
-// 版本核对改看下面这行控制台输出，以及与 html 的 PAGE_BUILD 不一致时的告警
+// 页面版本核对：与 html 的 PAGE_BUILD 不一致时告警
 console.log('[exp1_clt] build ' + EXP1_CLT_BUILD + ' loaded');
 
-// 版本自检：页面（exp1_clt.html）与脚本（exp1_clt.js）版本号必须一致。
-// 不一致说明浏览器缓存了旧的 exp1_clt.js（实验会跑出旧规则、旧导出文件名），
+// 版本自检：页面（exp1_clt.html）与脚本（exp1_clt_compare.js）版本号必须一致。
+// 不一致说明浏览器缓存了旧 exp1_clt_compare.js（实验会跑出旧规则、旧导出文件名），
 // 在设置页直接给出告警，避免又用旧代码跑一整轮实验。
 (function checkBuildMatch() {
     const pageBuild = window.EXP1_CLT_PAGE_BUILD;
@@ -183,9 +181,9 @@ function wait(ms) {
 }
 
 // --- DOM 元素 ---
-// 问卷阶段已删除，因此 screens 中不再包含 questionnaire 键
 const screens = {
     setup: document.getElementById('setup-phase'),
+    subjectid_confirm: document.getElementById('subjectid-confirm-phase'),
     instructions: document.getElementById('instructions-phase'),
     experiment: document.getElementById('experiment-phase'),
     break: document.getElementById('break-phase'),
@@ -195,68 +193,21 @@ const screens = {
 const canvas = document.getElementById('expCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 
-// --- 身份证号掩蔽 & SubjectID 自动生成 ---
-let realIdCard = ''; // 存储真实身份证号（掩蔽显示时仍保留原值）
-
-const idCardInput = document.getElementById('subIdCard');
-const phoneInput = document.getElementById('subPhone');
+// --- SubjectID 自动生成 ---
+// 规则：{subGroup}_{3位点击顺序}_{3位随机后缀}
+// 调试模式：subGroup=0 时固定为 1111
 const subjectIDInput = document.getElementById('subjectID');
+let generatedClickOrder = null;
 
-// 身份证号：输入时更新真实值
-idCardInput.addEventListener('input', () => {
-    realIdCard = idCardInput.value;
-    updateSubjectID();
-});
-// 聚焦时恢复真实值便于编辑
-idCardInput.addEventListener('focus', () => {
-    idCardInput.value = realIdCard;
-});
-// 失焦时掩蔽显示（前4位 + * + 后6位）
-idCardInput.addEventListener('blur', () => {
-    realIdCard = idCardInput.value;
-    if (realIdCard.length > 10) {
-        idCardInput.value = realIdCard.substring(0, 4)
-            + '*'.repeat(realIdCard.length - 10)
-            + realIdCard.substring(realIdCard.length - 6);
-    }
-});
-
-// 手机号变化时更新 SubjectID
-phoneInput.addEventListener('input', updateSubjectID);
-// 调试模式复选框监听：勾选时自动填充默认调试信息
-const debugModeCheckbox = document.getElementById('debugMode');
-if (debugModeCheckbox) {
-    debugModeCheckbox.addEventListener('change', (e) => {
-        if (e.target.checked) {
-            const nameEl = document.getElementById('subName');
-            const genderEl = document.getElementById('subGender');
-            const ageEl = document.getElementById('subAge');
-            if (nameEl) nameEl.value = '1';
-            if (genderEl) genderEl.value = '女';
-            if (ageEl) ageEl.value = '1';
-            realIdCard = '111111111111111111';
-            if (idCardInput) idCardInput.value = '1111********111111';
-            if (phoneInput) phoneInput.value = '11111111111';
-            if (subjectIDInput) subjectIDInput.value = '1111';
-        }
-    });
+function generateSubjectID(subGroupValue) {
+    if (String(subGroupValue) === '0') return '1111';
+    const order = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const suffix = Array.from({ length: 3 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
+    generatedClickOrder = order;
+    return `${subGroupValue}_${order}_${suffix}`;
 }
 
-function updateSubjectID() {
-    const id = buildSubjectID();
-    subjectIDInput.value = id;
-}
-
-function buildSubjectID() {
-    const idVal = realIdCard || idCardInput.value || '';
-    const phoneVal = phoneInput.value || '';
-    if (idVal.length >= 6 && phoneVal.length >= 4) {
-        return idVal.slice(-6) + phoneVal.slice(-4);
-    }
-    return '';
-}
-
-// 实验日期（YYYYMMDD），随数据一起保存；不再用于导出文件名
 function formatDateYYYYMMDD(d) {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -264,8 +215,7 @@ function formatDateYYYYMMDD(d) {
     return `${y}${m}${day}`;
 }
 
-// 掩蔽身份证号（用于数据导出，保护隐私）
-// 空值安全：导出时可能为未填写/未初始化，此时返回空串而不是抛错
+// 掩蔽身份证号（用于数据导出，保护隐私）—— 本版本不再采集，保留 helper 以防旧引用
 function maskIdCard(idCard) {
     if (!idCard) return '';
     if (idCard.length > 10) {
@@ -276,20 +226,21 @@ function maskIdCard(idCard) {
     return idCard;
 }
 
-// 全角数字 → 半角数字（中文输入法打出的「１」会被折算成「1」）
-// 组别校验与调试模式触发判定共用，避免「明明填了却判不中」。
+// 全角数字 → 半角数字
 function normalizeDigits(v) {
     return String(v == null ? '' : v)
         .trim()
         .replace(/[\uFF10-\uFF19]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFF10 + 0x30));
 }
 
-// 组别（两个范式的先后顺序，被试间变量）：
+// 组别：
+//   0 = 调试模式
 //   1 = 先做变化觉察任务（FCDT）再做变化定位任务（CLT）
 //   2 = 先做变化定位任务（CLT）再做变化觉察任务（FCDT）
-// 两个实验程序共用同一套编号，导出列名为 Order，合并两个范式的数据后
+// 两个实验程序共用同一套编号，导出列名为 subGroup / Order，合并两个范式的数据后
 // 即可检验「Order × ExperimentType」的交互（即顺序效应）。
 const GROUP_LABELS = {
+    0: '0 = 调试模式',
     1: '1 = 先做变化觉察任务（FCDT），再做变化定位任务（CLT）',
     2: '2 = 先做变化定位任务（CLT），再做变化觉察任务（FCDT）'
 };
@@ -304,62 +255,34 @@ document.getElementById('start-btn').addEventListener('click', async () => {
     const form = document.getElementById('setup-form');
     if (!form.reportValidity()) return;
 
-    // 组别：两个范式的先后顺序（被试间变量），只接受 1 或 2。
-    // HTML 侧已用 pattern="[12]" + required 做第一层拦截，这里再显式校验一次：
-    // 一是兜住全角数字与粘贴带空格的情况，二是把合法取值告诉被试（页面上不写）。
     const subGroupValue = readSubGroup();
-    if (!/^[12]$/.test(subGroupValue)) {
-        alert('组别填写有误，请按主试安排填写：\n' + GROUP_LABELS[1] + '\n' + GROUP_LABELS[2]);
+    if (!/^[012]$/.test(subGroupValue)) {
+        alert('组别填写有误，请按主试安排填写：\n' + GROUP_LABELS[0] + '\n' + GROUP_LABELS[1] + '\n' + GROUP_LABELS[2]);
         const subGroupInput = document.getElementById('subGroup');
         if (subGroupInput && subGroupInput.focus) subGroupInput.focus();
         return;
     }
     p.subGroup = Number(subGroupValue);
 
-    p.subName = document.getElementById('subName').value;
-    p.subGender = document.getElementById('subGender').value;
-    p.subAge = document.getElementById('subAge').value;
-    p.subIdCard = realIdCard || idCardInput.value; // 使用真实身份证号
-    p.subPhone = document.getElementById('subPhone').value;
-    // 被试编号：点击开始时按规则由当前输入框的值重新生成一次
-    // （不依赖 input 事件，浏览器自动填充 / 程序赋值也能正确生成）
-    if (buildSubjectID()) subjectIDInput.value = buildSubjectID();
-    // 严格按「身份证后6位 + 手机后4位」的原始数字字符串保存，不做 parseInt
-    // （否则前导 0 会被吞掉，如 0701231234 变成 701231234）
-    const generatedID = String(subjectIDInput.value || '').trim();
-    p.subjectID = generatedID || String(Date.now());
-    if (!generatedID) {
-        // 身份证号不足 6 位或手机号不足 4 位时无法按规则生成编号，
-        // 只能退回时间戳。明确告警，避免事后把「一串数字」误当成随机种子。
-        console.warn('[exp1_clt] 被试编号无法按规则生成（身份证号需 ≥6 位、手机号需 ≥4 位），' +
-            '已退回时间戳：' + p.subjectID);
-    }
-    // 随机种子：用字符串编号派生（Number 转换仅用于 PRNG 内部，不影响编号本身）
-    const seedNum = Number(p.subjectID);
-    p.rndSeed = Number.isFinite(seedNum) ? seedNum : Date.now();
-    p.saveLocal = true; // 保存到本地始终开启（复选框已隐藏，网页端数据库 + 本地均保存）
-    p.expDate = formatDateYYYYMMDD(new Date()); // 实验日期（随数据保存，不参与文件名）
+    const subjectID = generateSubjectID(p.subGroup);
+    subjectIDInput.value = subjectID;
+    p.subjectID = subjectID;
 
-    // 调试模式触发（复选框已隐藏）：姓名/年龄/身份证号/手机号 四个输入框全部填 1
-    // （性别为下拉选择，不参与判定；subjectID 自动生成不受影响）
-    // 判定做了两处容错，避免「明明填了 1 却没进调试模式、导出文件名变成一串时间戳」：
-    //   1) 中文输入法打出的全角「１」自动折算为半角；
-    //   2) 只要四个框的内容「全部由数字 1 组成」即算命中 —— 身份证号框受 maxlength=18
-    //      限制，连打 18 个 1 时也是命中；且用的是未掩蔽的 realIdCard，
-    //      不会因为失焦掩蔽成「1111********111111」而漏判。
-    // 全角折算复用 normalizeDigits()（与组别校验同一个 helper）
-    const isAllOnes = (v) => /^1+$/.test(normalizeDigits(v));
-    p.debugMode = isAllOnes(p.subName);
+    // 调试模式：subGroup = 0
+    p.debugMode = p.subGroup === 0;
     if (p.debugMode) {
-        console.log('[exp1_clt] 调试模式已触发（姓名/年龄/身份证号/手机号 全为 1）');
+        console.log('[exp1_clt] 调试模式已触发（组别 = 0）');
     } else {
-        console.log(`[exp1_clt] 正式模式（姓名="${p.subName}" 年龄="${p.subAge}" ` +
-            `身份证号长度=${String(p.subIdCard || '').length} 手机号="${p.subPhone}"）`);
+        console.log('[exp1_clt] 正式模式（组别=' + p.subGroup + '，被试编号=' + subjectID + '）');
     }
 
-    // 调试模式：练习仍使用完整的 15 个试次；正式实验缩短为 1 个 block × 5 trial，
-    // 并跳过 block 间休息。prefs 保留完整设计参数，避免调试设置干扰正式试次生成自检；
-    // 被试编号与随机种子一并固定为 1111（导出文件名为 exp1_clt_1111.xlsx），便于识别与复现。
+    p.saveLocal = true;
+    p.expDate = formatDateYYYYMMDD(new Date());
+
+    // 调试模式固定种子，正式模式用被试编号派生
+    p.rndSeed = p.debugMode ? 1111 : Number(subjectID) || Date.now();
+    seedRandom(p.rndSeed);
+
     runtimeNumBlocks = prefs.numBlocks;
     runtimeNumTrials = prefs.numTrials;
     runtimeBreakLength = prefs.breakLength;
@@ -369,17 +292,12 @@ document.getElementById('start-btn').addEventListener('click', async () => {
         runtimeBreakLength = 0;
         p.subjectID = '1111';
         p.rndSeed = 1111;
-        subjectIDInput.value = '1111'; // 设置页同步显示，与导出文件名中的被试编号一致
+        subjectIDInput.value = '1111';
     }
 
-    seedRandom(p.rndSeed);
-
-    // 正式试次序列使用专属 PRNG 种子，与练习阶段完全解耦（与 exp1_fcdt 一致）：
-    // 无论练习是否执行 / 跳过，buildFormalTrials 输出的 80 个正式试次顺序恒定，
-    // 续做时跳过练习直接从第 N 组继续，被试看到的 80 个正式试次序列与首次完全一致。
+    // 正式试次序列使用专属 PRNG 种子，与练习阶段完全解耦
     formalPrngBaseSeed = p.rndSeed + 7919;
 
-    // 与 circle 版一致：在同一次开始点击手势中请求 Pointer Lock + 全屏。
     if (!canvas.requestPointerLock) {
         showSetupError('当前浏览器不支持鼠标指针锁定，请使用最新版 Chrome 或 Edge。');
         return;
@@ -428,8 +346,6 @@ document.getElementById('start-btn').addEventListener('click', async () => {
 
     try {
         if (!storage) throw new Error('Storage adapter is unavailable');
-        // experiment 决定 Batch Session 的进度键名（exp1_clt:<workerId>），
-        // 必须传，否则续做会退化成所有实验共用一个键
         await storage.initializeStorage({
             participant: { ...p }, build: EXP1_CLT_BUILD, experiment: EXPERIMENT_NAME
         });
@@ -441,10 +357,6 @@ document.getElementById('start-btn').addEventListener('click', async () => {
         }
     }
 
-    // 检查是否有可续做的进度（仅 JATOS Batch Session 后端提供；其它后端返回 null，
-    // 等价于"从头开始"，不影响正常流程）。续做从上次完成后的下一组继续，
-    // 试次序列因 PRNG 基准固定而与首次完全一致。
-    // 归属校验（这条进度是否属于当前被试）已在存储层完成：不属于、或无法校验时返回 null。
     let resumable = null;
     try {
         resumable = await storage.loadProgress();
@@ -455,37 +367,16 @@ document.getElementById('start-btn').addEventListener('click', async () => {
         resumeStartBlock = resumable.completedBlocks + 1;
         isResumedSession = true;
         resumedFromBlock = resumeStartBlock;
-        // 本次续做计入累计次数：进度里记的是"此前续做过几次"，本次 +1 后再随进度
-        // 写回；导出时该被试的每一行都带同一数值（一次做完的被试为 0）
         resumeCount = (resumable.resumeCount || 0) + 1;
         console.log('[' + EXPERIMENT_NAME + '] 检测到未完成的进度（已完成 ' +
             resumable.completedBlocks + ' 组），将从第 ' + resumeStartBlock + ' 组续做。');
     }
 
-    // 检测到可续做进度时，显示"继续 / 重新开始"选择条；否则隐藏。
-    switchScreen('instructions');
-    experimentPhase = 'instructions';
-
-    const resumeNotice = document.getElementById('resume-notice');
-    if (resumeNotice) {
-        if (resumeStartBlock > 1) resumeNotice.classList.remove('hidden');
-        else resumeNotice.classList.add('hidden');
-    }
-    const btnResume = document.getElementById('btn-resume');
-    if (btnResume) btnResume.addEventListener('click', () => {
-        resumeNotice.classList.add('hidden');
-        // 保持 resumeStartBlock 不变，指导语读完后 SPACE 键按续做起点分流
-    });
-    const btnRestart = document.getElementById('btn-restart');
-    if (btnRestart) btnRestart.addEventListener('click', () => {
-        resumeStartBlock = 1;
-        isResumedSession = false;
-        resumedFromBlock = 0;
-        resumeCount = 0;
-        if (storage) storage.clearProgress();
-        resumeNotice.classList.add('hidden');
-        console.log('[' + EXPERIMENT_NAME + '] 被试选择从头重新开始，已清除线上进度。');
-    });
+    // 被试编号确认页：让被试看清并记录编号
+    const confirmIdEl = document.getElementById('confirm-subject-id');
+    if (confirmIdEl) confirmIdEl.innerText = '被试编号：' + p.subjectID;
+    switchScreen('subjectid-confirm');
+    experimentPhase = 'subjectid_confirm';
 });
 
 function showSetupError(message) {
@@ -504,18 +395,20 @@ function switchScreen(screenName) {
 window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
 
+    if (experimentPhase === 'subjectid_confirm' && (e.code === 'Space' || e.key === ' ')) {
+        e.preventDefault();
+        switchScreen('instructions');
+        experimentPhase = 'instructions';
+        return;
+    }
     if (experimentPhase === 'instructions' && (e.code === 'Space' || e.key === ' ')) {
         e.preventDefault();
-        // 续做（resumeStartBlock > 1）：被试已在首次做过练习，跳过直接进正式；
-        // 否则正常走练习 → 正式流程。
         if (resumeStartBlock > 1) startFormal();
         else startPractice();
     } else if (experimentPhase === 'practice_end' && (e.code === 'Space' || e.key === ' ')) {
         e.preventDefault();
         startFormal();
     } else if (experimentPhase === 'break_countdown' || experimentPhase === 'break_wait') {
-        // 休息阶段：强制倒计时期间按 SPACE 无效；
-        // 倒计时结束后按 SPACE 进入下一组（无「继续休息」按钮，也无 ESC 退出）
         if (experimentPhase === 'break_wait' && (e.code === 'Space' || e.key === ' ')) {
             e.preventDefault();
             nextBlock();
@@ -1086,7 +979,6 @@ async function runTrial() {
         subjectID: p.subjectID,
         experimentVersion: EXPERIMENT_VERSION,
         sessionID: SESSION_ID,
-        subName: p.subName,
         block: currentBlock,
         trial: currentTrial + 1,
         setSize: condition.setSize,
@@ -1330,17 +1222,9 @@ function enrichRows(rows) {
 function prepareStorageRow(row) {
     return {
         ...row,
-        subGroup: p.subGroup,          // 组别（1/2）：两个范式的先后顺序，导出列名为 Order
-        subName: p.subName,
-        subGender: p.subGender,
-        subAge: p.subAge,
-        subIdCard: maskIdCard(p.subIdCard),
-        subPhone: p.subPhone,
+        subGroup: p.subGroup,          // 组别（0/1/2）：0=调试，1/2=正式顺序
         subjectID: p.subjectID,
         rndSeed: p.rndSeed,
-        // 断点续做标记（append-only，不改现有字段语义；与 exp1_fcdt 一致）：
-        //   resumedFromBlock = 本次从第几组续做（0 表示非续做，从头开始）
-        //   resumeCount      = 该被试历史上第几次续做（未续做 = 0，第 1 次续做 = 1）
         resumedFromBlock: isResumedSession ? resumedFromBlock : 0,
         resumeCount: isResumedSession ? resumeCount : 0
     };
@@ -1515,24 +1399,23 @@ function buildKRow(ss, durationLabel, rows) {
     return {
         SubjectID: p.subjectID,
         SessionID: SESSION_ID,
-        ExperimentVersion: EXPERIMENT_VERSION,                // 文本：保留前导 0
+        ExperimentVersion: EXPERIMENT_VERSION,
         ExperimentType: EXPERIMENT_NAME,
-        Order: exportNum(p.subGroup),          // 组别 1 / 2（被试间变量）
+        subGroup: exportNum(p.subGroup),
+        Order: exportNum(p.subGroup),
         SetSize: ss,
-        // 汇总行的 StudyDuration 记为 '汇总'（非数值），导出时会被自动留空，
-        // 以保证 K Values 的 StudyDuration 列是纯数值自变量（见「导出列规范」）
         StudyDuration: durationLabel,
         Condition: isSummary ? ('SS' + ss + '-汇总') : conditionLabel(durationLabel, ss),
-        TotalTrials: nTotal,                   // 该条件全部试次（含超时）
-        ValidTrials: nValid,                   // 剔除超时后真正参与统计的试次
+        TotalTrials: nTotal,
+        ValidTrials: nValid,
         TimeoutTrials: nTotal - nValid,
         TimeoutExclusionRate: (nTotal > 0 ? (nTotal - nValid) / nTotal : 0).toFixed(4),
         CorrectTrials: nCorrect,
-        Accuracy_Exclude: accExclude.toFixed(4),        // 主口径：超时剔除
+        Accuracy_Exclude: accExclude.toFixed(4),
         K_Exclude: typeof kExclude === 'number' ? kExclude.toFixed(4) : '',
-        Accuracy_TimeoutErr: accTimeoutError.toFixed(4), // 备选口径：超时按错误计入
+        Accuracy_TimeoutErr: accTimeoutError.toFixed(4),
         K_TimeoutErr: typeof kTimeoutError === 'number' ? kTimeoutError.toFixed(4) : '',
-        MeanRT: rtMean === '' ? '' : rtMean.toFixed(4),  // 只取有效且正确的试次
+        MeanRT: rtMean === '' ? '' : rtMean.toFixed(4),
         LowAccFlag: ss4LowAccuracyFlag ? 1 : 0,
         LowAccRed: lowAccRed ? 1 : 0,
         LowAccBlockCount: lowAccBlockCount
@@ -1628,46 +1511,42 @@ const TRIAL_EXPORT_COLUMNS = [
     { header: 'SessionID',          text: true, get: (d) => d.sessionID || SESSION_ID },
     { header: 'ExperimentVersion',  text: true, get: (d) => d.experimentVersion || EXPERIMENT_VERSION },
     { header: 'ExperimentType',    text: true, get: (d) => d.experimentType || EXPERIMENT_NAME },
-    // Order：组别（1 / 2），两个范式的先后顺序，被试间变量。
-    // 1 = 先做变化觉察任务（FCDT）再做变化定位任务（CLT）；2 = 顺序相反（含义见 GROUP_LABELS）
-    { header: 'subGroup',                      get: (d) => exportNum(d.subGroup !== undefined ? d.subGroup : p.subGroup) },
-    { header: 'Block',                         get: (d) => exportNum(d.block) },
-    { header: 'TrialInBlock',                  get: (d) => exportNum(d.trial) },
-    { header: 'TrialGlobal',                   get: (d) => exportNum(d.TrialGlobal) },
-    { header: 'SetSize',                       get: (d) => exportNum(d.setSize) },
-    { header: 'StudyDuration',                 get: (d) => exportNum(d.studyDuration) },
+    // subGroup / Order：组别（0/1/2），0=调试，1/2=正式顺序，被试间变量。
+    { header: 'subGroup',                   get: (d) => exportNum(d.subGroup !== undefined ? d.subGroup : p.subGroup) },
+    { header: 'Order',                      get: (d) => exportNum(d.subGroup !== undefined ? d.subGroup : p.subGroup) },
+    { header: 'Block',                      get: (d) => exportNum(d.block) },
+    { header: 'TrialInBlock',               get: (d) => exportNum(d.trial) },
+    { header: 'TrialGlobal',                get: (d) => exportNum(d.TrialGlobal) },
+    { header: 'SetSize',                    get: (d) => exportNum(d.setSize) },
+    { header: 'StudyDuration',              get: (d) => exportNum(d.studyDuration) },
     { header: 'Condition',         text: true, get: (d) => conditionLabel(d.studyDuration, d.setSize) },
-    { header: 'Accuracy',                      get: (d) => exportNum(d.accuracy) },
-    { header: 'RT',                            get: (d) => (typeof d.rt === 'number' ? Number(d.rt.toFixed(4)) : null) },
-    { header: 'ResponseRGB',          text: true, get: (d) => d.responseRGB },
-    { header: 'CorrectRGB',           text: true, get: (d) => d.correctRGB },
-    { header: 'ResponseColorIdx',               get: (d) => exportNum(d.responseColorIdx) },
-    { header: 'CorrectColorIdx',                get: (d) => exportNum(d.correctColorIdx) },
+    { header: 'Accuracy',                   get: (d) => exportNum(d.accuracy) },
+    { header: 'RT',                         get: (d) => (typeof d.rt === 'number' ? Number(d.rt.toFixed(4)) : null) },
+    { header: 'ResponseRGB',         text: true, get: (d) => d.responseRGB },
+    { header: 'CorrectRGB',          text: true, get: (d) => d.correctRGB },
+    { header: 'ResponseColorIdx',           get: (d) => exportNum(d.responseColorIdx) },
+    { header: 'CorrectColorIdx',            get: (d) => exportNum(d.correctColorIdx) },
     { header: 'TrialStatus',        text: true, get: (d) => d.TrialStatus || (d.timeout ? 'timeout' : 'valid') },
-    { header: 'CountedInK',                   get: (d) => exportNum(d.CountedInK) },
-    { header: 'StudyDurationActual',           get: (d) => exportNum(d.studyDurationActual) },
-    { header: 'SubName',           text: true, get: (d) => d.subName || p.subName },
-    { header: 'SubGender',         text: true, get: (d) => d.subGender || p.subGender },
-    { header: 'SubAge',                        get: (d) => exportNum(d.subAge !== undefined ? d.subAge : p.subAge) },
-    { header: 'SubIdCard',         text: true, get: (d) => d.subIdCard || maskIdCard(p.subIdCard) },
-    { header: 'SubPhone',          text: true, get: (d) => d.subPhone || p.subPhone },
-    { header: 'RandomSeed',        text: true, get: (d) => d.rndSeed !== undefined ? d.rndSeed : p.rndSeed },
-    { header: 'ResumedFromBlock',              get: (d) => exportNum(d.resumedFromBlock) },
-    { header: 'ResumeCount',                   get: (d) => exportNum(d.resumeCount) },
-    { header: 'ChangeItem',                    get: (d) => exportNum(d.changeItem) },
-    { header: 'OrigColorIdx',                  get: (d) => exportNum(d.origColorIdx) },
-    { header: 'ProbeColorIdx',                 get: (d) => exportNum(d.probeColorIdx) },
-    { header: 'ItemLocs',          text: true, get: (d) => d.itemLocs },
-    { header: 'ItemColors',        text: true, get: (d) => d.itemColors },
-    { header: 'LabelMap',         text: true, get: (d) => d.labelMap },
-    { header: 'TrialLabels',       text: true, get: (d) => d.trialLabels },
-    { header: 'LabelChars',        text: true, get: (d) => d.labelChars }
+    { header: 'CountedInK',                 get: (d) => exportNum(d.CountedInK) },
+    { header: 'StudyDurationActual',        get: (d) => exportNum(d.studyDurationActual) },
+    { header: 'RandomSeed',           text: true, get: (d) => d.rndSeed !== undefined ? d.rndSeed : p.rndSeed },
+    { header: 'ResumedFromBlock',           get: (d) => exportNum(d.resumedFromBlock) },
+    { header: 'ResumeCount',                get: (d) => exportNum(d.resumeCount) },
+    { header: 'ChangeItem',                 get: (d) => exportNum(d.changeItem) },
+    { header: 'OrigColorIdx',               get: (d) => exportNum(d.origColorIdx) },
+    { header: 'ProbeColorIdx',              get: (d) => exportNum(d.probeColorIdx) },
+    { header: 'ItemLocs',            text: true, get: (d) => d.itemLocs },
+    { header: 'ItemColors',          text: true, get: (d) => d.itemColors },
+    { header: 'LabelMap',           text: true, get: (d) => d.labelMap },
+    { header: 'TrialLabels',         text: true, get: (d) => d.trialLabels },
+    { header: 'LabelChars',          text: true, get: (d) => d.labelChars }
 ];
 
-// --- Sheet 2（K Values）/ Sheet 3（Summary SetSize）共用 ---
+// --- Sheet 2（K Values）---
 // 列名即 buildKRow 返回的字段名，此处只负责「固定顺序 + 统一类型」
 const K_EXPORT_COLUMNS = [
-    'SubjectID', 'SessionID', 'ExperimentVersion', 'ExperimentType', 'subGroup', 'SetSize', 'StudyDuration', 'Condition',
+    'SubjectID', 'SessionID', 'ExperimentVersion', 'ExperimentType', 'subGroup', 'Order',
+    'SetSize', 'StudyDuration', 'Condition',
     'TotalTrials', 'ValidTrials', 'TimeoutTrials', 'TimeoutExclusionRate',
     'CorrectTrials', 'Accuracy_Exclude', 'K_Exclude',
     'Accuracy_TimeoutErr', 'K_TimeoutErr', 'MeanRT',
@@ -1699,7 +1578,7 @@ function downloadXLSX() {
     lowAccDetail = lowAccResult;
 
     // 补全被试信息与断点续做标记（幂等：finishExperiment 里可能已补过一次），
-    // 保证 Trial Data 每行都带 SubGender / SubAge / RandomSeed 等被试级字段
+    // 保证 Trial Data 每行都带 subGroup / subjectID / RandomSeed 等关键字段
     enrichRows(stimData);
 
     // 全局试次序号（1..360）：长格式里用来查顺序效应 / 疲劳效应，
@@ -1708,18 +1587,18 @@ function downloadXLSX() {
 
     // ============================================================
     //  Sheet 1: Trial Data
-    //  长格式，一行一试次，共 360 行；列顺序与含义见上方「导出列规范」
+    //  长格式，一行一试次；列顺序与含义见上方「导出列规范」
     // ============================================================
     const trialSheet = sheetFromColumns(stimData, TRIAL_EXPORT_COLUMNS);
 
     // ============================================================
-    //  Sheet 2: K Values（条件级，12 行 = 4 呈现时长 × 3 set size）
+    //  Sheet 2: K Values（条件级）
     //  CLT 公式: K = (Acc * N^2 - N) / (N - 1)
     //  同时报告两种口径：
     //    Accuracy_Exclude / K_Exclude        ：超时剔除（主口径）；
     //    Accuracy_TimeoutErr / K_TimeoutErr ：超时按错误计入（备选口径）。
     //  TimeoutExclusionRate 报告每个条件被剔除的超时比例。
-    //  StudyDuration 在本表恒为数值；跨时长的汇总行单独放 Sheet 3。
+    //  StudyDuration 在本表恒为数值；跨时长的汇总行单独放 Sheet 4。
     // ============================================================
     const kData = [];
     const sortedDurations = prefs.studyDurations.slice().sort((a, b) => a - b);
@@ -1780,7 +1659,7 @@ function downloadXLSX() {
     XLSX.utils.book_append_sheet(wb, colorAccSheet, 'ColorAccuracy');
     XLSX.utils.book_append_sheet(wb, groupedSheet, 'Grouped Trials');
 
-    // 文件名规则：实验名称_被试编号（如 exp1_clt_0112345678.xlsx）
+    // 文件名规则：实验名称_被试编号（如 exp1_clt_compare_1_023_abc.xlsx）
     // 存在低正确率条件（SS3/SS4 在 ≥200ms 正确率 < 50%）时在最前面加 F 标记；
     // 调试模式不做该判定，因此永不带 F
     const filePrefix = (!p.debugMode && ss4LowAccuracyFlag) ? 'F' : '';

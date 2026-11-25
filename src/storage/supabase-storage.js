@@ -4,9 +4,9 @@
     const SUPABASE_URL = 'https://rnfwxphdzvonoiduidsg.supabase.co';
     const SUPABASE_KEY = 'sb_publishable_kdXRnhVgTwsfgrrzO0ok8A_PZOKfHZK';
     const BASE_COLUMNS = [
-        'subjectID', 'sessionID', 'experimentVersion', 'subName', 'subGender', 'subAge', 'subIdCard', 'subPhone',
+        'subjectID', 'sessionID', 'experimentVersion', 'subGroup', 'Order',
         'block', 'trial', 'TrialGlobal', 'setSize', 'studyDuration', 'studyDurationActual',
-        'isChange', 'experimentType', 'subGroup', 'Order',
+        'isChange', 'experimentType',
         'rt', 'response', 'responseLabel', 'accuracy', 'correctResponse', 'correctResponseLabel',
         'TrialStatus', 'CountedInK', 'rndSeed', 'resumedFromBlock', 'resumeCount',
         'changeItem', 'origColorIdx', 'probeColorIdx', 'itemLocs', 'itemColors', 'labelMap'
