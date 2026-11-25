@@ -13,7 +13,7 @@
     <link rel="stylesheet" href="style.css">
     <!-- 页面版本号：与 exp1_clt_compare.js 的 EXP1_CLT_BUILD 保持一致，用于检测浏览器是否缓存了旧脚本 -->
     <script>
-        window.EXP1_CLT_PAGE_BUILD = '20261123compare-circle1';
+        window.EXP1_CLT_PAGE_BUILD = '20261125compare-clean2';
         window.CLT_STORAGE_BACKEND = 'supabase';
     </script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -28,13 +28,11 @@
 
 <body>
 
-    <!-- 1. 设置与被试信息阶段 -->
+    <!-- 1. 设置与被试信息阶段（精简版：仅保留组别与自动生成的被试编号） -->
     <div id="setup-phase" class="screen">
         <div class="card">
-            <h1>变化定位任务</h1>
+            <h1>变化定位任务 · compare 版</h1>
             <p class="subtitle">请输入被试基本信息</p>
-            <!-- 版本标记（build-tag）已按要求从页面移除；版本核对改看控制台的
-                 "[exp1_clt] build ... loaded" 一行，以及下方的版本不一致告警 -->
             <!-- 版本不一致告警：浏览器缓存了旧 exp1_clt_compare.js 时显示 -->
             <p class="build-mismatch hidden" id="build-mismatch">
                 检测到页面与 exp1_clt_compare.js 版本不一致（浏览器缓存了旧代码）。请按 Ctrl+F5 强制刷新后再开始实验。
@@ -42,41 +40,31 @@
 
             <form id="setup-form">
                 <div class="form-group">
-                    <label for="subName">姓名 (Name)</label>
-                    <input type="text" id="subName" required>
-                </div>
-                <div class="form-group">
-                    <label for="subGender">性别 (Gender)</label>
-                    <select id="subGender" required>
-                        <option value="">请选择</option>
-                        <option value="男">男</option>
-                        <option value="女">女</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="subAge">年龄 (Age)</label>
-                    <input type="number" id="subAge" required>
-                </div>
-                <div class="form-group">
-                    <label for="subIdCard">身份证号 (ID Card Number)</label>
-                    <input type="text" id="subIdCard" maxlength="18" required>
-                </div>
-                <div class="form-group">
-                    <label for="subPhone">手机号 (Phone Number)</label>
-                    <input type="tel" id="subPhone" maxlength="11" required>
-                </div>
-                <div class="form-group">
                     <label for="subGroup">组别 (Group)</label>
                     <input type="text" id="subGroup" inputmode="numeric" maxlength="1"
-                           pattern="[12]" placeholder="1=先做FCDT后CLT；2=先做CLT后FCDT" required>
+                           pattern="[012]" placeholder="0=调试；1=先做FCDT后CLT；2=先做CLT后FCDT" required>
                 </div>
                 <div class="form-group">
-                    <label for="subjectID">被试编号 (Subject ID — 自动生成)</label>
-                    <input type="text" id="subjectID" readonly placeholder="由身份证后6位 + 手机后4位自动生成">
+                    <label for="subjectID">匿名被试编号 (Subject ID)</label>
+                    <input type="text" id="subjectID" readonly placeholder="开始实验后自动生成">
                 </div>
 
                 <button type="button" id="start-btn" class="btn primary">开始实验</button>
             </form>
+        </div>
+    </div>
+
+    <!-- 被试编号确认页：让被试看清编号并记录后再继续 -->
+    <div id="subjectid-confirm-phase" class="screen hidden match-instruct">
+        <div class="instruct-container">
+            <div class="instruct-text">
+                <p class="instruct-title">请记下您的被试编号</p>
+                <div class="instruct-body">
+                    <p id="confirm-subject-id"></p>
+                    <p>该编号由“组别 + 点击顺序 + 随机后缀”自动生成，用于合并两次实验的数据。</p>
+                    <p>请拍照或写在纸上，确认无误后按【SPACE】继续。</p>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -205,7 +193,7 @@
     <!-- 版本号用于强制刷新浏览器缓存，每次修改 exp1_clt_compare.js 后请同步递增 -->
     <script src="src/storage/supabase-storage.js"></script>
     <script src="src/storage/index.js"></script>
-    <script src="exp1_clt_compare.js?v=20261123compare-circle1"></script>
+    <script src="exp1_clt_compare.js?v=20261125compare-clean2"></script>
 </body>
 
 </html>
