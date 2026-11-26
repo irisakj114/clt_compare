@@ -126,7 +126,7 @@ const prefs = {
     numBlocks: 4,
     numTrials: 20,
     nEachCondition: 40,      // 每个 set size 40 trial，共 80 trial
-    nPractice: 16,          // 练习 16 trial，2 种 set size 各 8 trial
+    nPractice: 8,           // 调试练习 8 trial，2 种 set size 各 4 trial
     ITI: 500,               // ms
     retentionInterval: 1000,// ms
     stimSize: 51,
@@ -1817,177 +1817,101 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 // ============================================================
-//  getStimLocs — 极坐标四象限位置生成（对应 MATLAB getStimLocs）
+//  getStimLocs — 圆环随机位置（compare 版 CDT / CLT 统一布局）
+//
+//  参考 Luck & Vogel (1997) 与 2021 AP&P 圆形阵列：所有刺激中心落在
+//  同一个以注视点为圆心的圆周上，位置等角间隔、逐试次随机旋转。
+//
+//  ① 圆环（"位置都必须在圆环上"）：
+//     半径 R 对所有色块恒定，每个色块到注视点距离完全相同，
+//     不会出现某个色块离注视点"过远"，也不会被挤到画布外"过近"。
+//     名义半径按画布短边缩放（768px 参考系下 200px ≈ 1.95° 视角），
+//     再内缩 半个色块 + 留白，保证 51px 色块完整可见。
+//
+//  ② 最小间距（"间距按文献设置 / 没有过近"）：
+//     圆周等分为 RING_SLOTS 个候选槽位，相邻槽位中心距
+//     = 2R·sin(π / RING_SLOTS)。把相邻色块最小中心距设为
+//     MIN_CENTER_DIST = 色块边长 + RING_MIN_GAP，反推所需最小半径
+//     R_min = MIN_CENTER_DIST / (2·sin(π / RING_SLOTS))，
+//     取 R = max(R_名义, R_min)，从几何上保证任意相邻色块不重叠、不贴边。
+//     ※ 需按具体文献调整间距时，只改 RING_SLOTS / RING_MIN_GAP 两个参数。
+//
+//  ③ 位置随机 + 分布均匀（"位置选择随机 / 没有过近或过远"）：
+//     每试次给整圈一个随机旋转 φ ∈ (−半槽距, +半槽距)，幅度不超过
+//     半槽距，槽位不会跨过坐标轴线；再在等间隔槽位里随机挑 setSize 个，
+//     用"环形相邻间隔的均衡度"给组合评分，只从最均匀的一批里选，
+//     避免色块全挤在半圈（一侧留大片空白"过远"）或扎堆（"过近"）。
+//
+//  ④ 降低重复（"相同位置选择的试次较少"）：
+//     记录上一次使用的槽位组合签名，随机抽样时尽量避开重复组合；
+//     叠加连续随机旋转角，使连续试次几乎不会呈现完全相同的布局。
 // ============================================================
+const RING_SLOTS = 8;                    // 圆周等分候选位置数（文献常用 8）
+const RING_SLOT_STEP = 360 / RING_SLOTS; // 槽位角间隔 = 45°
+const RING_MIN_GAP = 12;                 // 相邻色块最小额外留白 px
+const RING_EDGE_MARGIN = 8;              // 色块中心到画布边缘的最小留白 px
+const RING_RADIUS_RATIO = 200 / 768;     // 名义半径 / 画布短边（≈1.95° 视角）
+let lastRingSignature = null;            // 上一次使用的槽位组合，用于降低重复
+
 function getStimLocs(nItems, cx, cy) {
     const S = prefs.stimSize;
-    // 与 circle/原始/traditional 统一：外半径按画布短边同比例缩放。
     const shortSide = Math.min(canvas.width, canvas.height);
-    const stimulusCircleRadius = shortSide * (200 / 768);
-    let minR = stimulusCircleRadius;
-    let maxR = stimulusCircleRadius;
-    maxR = Math.min(maxR, shortSide / 2 - S);
-    minR = Math.max(minR, S * 2.0);
+    const nominalR = Math.min(
+        shortSide * RING_RADIUS_RATIO,
+        shortSide / 2 - S / 2 - RING_EDGE_MARGIN
+    );
+    const minCenterDist = S + RING_MIN_GAP;
+    const minR = minCenterDist / (2 * Math.sin(Math.PI / RING_SLOTS));
+    const radius = Math.max(nominalR, minR);
 
-    const minDist = S * 2.5;
-    const relaxDist = S * 2.0;
-    const axisMargin = 20 * Math.PI / 180;
-
-    const quadPatterns6 = [
-        [2,2,1,1], [1,2,1,2], [1,1,2,2], [1,2,2,1], [2,1,1,2], [2,1,2,1]
-    ];
-
-    let perQuad;
-    if (nItems === 3) {
-        // SS3 随机空出一个象限，其余三个象限各放一个色块；沿用同一 PRNG 保证可复现。
-        perQuad = [1, 1, 1, 0];
-        shuffleArray(perQuad);
-    } else if (nItems === 4) {
-        perQuad = [1, 1, 1, 1];
-    } else if (nItems === 6) {
-        perQuad = quadPatterns6[randInt(0, 5)];
-    } else {
-        throw new Error('getStimLocs: nItems must be 3, 4, or 6, got ' + nItems);
-    }
-
-    const qLo = [
-        axisMargin, Math.PI / 2 + axisMargin,
-        Math.PI + axisMargin, 3 * Math.PI / 2 + axisMargin
-    ];
-    const qHi = [
-        Math.PI / 2 - axisMargin, Math.PI - axisMargin,
-        3 * Math.PI / 2 - axisMargin, 2 * Math.PI - axisMargin
-    ];
-
-    const nCandidates = 30;
-    let bestScore = -Infinity;
-    let bestXPos = [], bestYPos = [];
-
-    for (let cand = 0; cand < nCandidates; cand++) {
-        let xPos_c = new Array(nItems).fill(0);
-        let yPos_c = new Array(nItems).fill(0);
-        let idx = 0;
-
-        for (let q = 0; q < 4; q++) {
-            const k = perQuad[q];
-            if (k === 0) continue;
-            const qRange = qHi[q] - qLo[q];
-
-            for (let i = 0; i < k; i++) {
-                let thetaC, subLo, subHi;
-                if (k === 1) {
-                    thetaC = qLo[q] + qRange * 0.5;
-                    let jit = qRange * 0.15 * (random() - 0.5) * 2;
-                    subLo = thetaC + jit - qRange * 0.05;
-                    subHi = thetaC + jit + qRange * 0.05;
-                } else {
-                    thetaC = qLo[q] + qRange * (0.15 + 0.70 * i / (k - 1));
-                    let jit = qRange * 0.05 * (random() - 0.5) * 2;
-                    subLo = thetaC + jit - qRange * 0.03;
-                    subHi = thetaC + jit + qRange * 0.03;
-                }
-
-                let placed = false;
-
-                for (let att = 0; att < 500 && !placed; att++) {
-                    let r = minR + (maxR - minR) * Math.sqrt(random());
-                    let theta = subLo + (subHi - subLo) * random();
-                    let xi = cx + r * Math.cos(theta);
-                    let yi = cy + r * Math.sin(theta);
-                    if (Math.abs(xi - cx) < S || Math.abs(yi - cy) < S) continue;
-                    let tooClose = false;
-                    for (let j = 0; j < idx; j++) {
-                        if (Math.hypot(xi - xPos_c[j], yi - yPos_c[j]) < minDist) { tooClose = true; break; }
-                    }
-                    if (!tooClose) { xPos_c[idx] = xi; yPos_c[idx] = yi; placed = true; }
-                }
-
-                if (!placed) {
-                    for (let att = 0; att < 800 && !placed; att++) {
-                        let r = minR + (maxR - minR) * Math.sqrt(random());
-                        let theta = qLo[q] + qRange * random();
-                        let xi = cx + r * Math.cos(theta);
-                        let yi = cy + r * Math.sin(theta);
-                        if (Math.abs(xi - cx) < S || Math.abs(yi - cy) < S) continue;
-                        let tooClose = false;
-                        for (let j = 0; j < idx; j++) {
-                            if (Math.hypot(xi - xPos_c[j], yi - yPos_c[j]) < minDist) { tooClose = true; break; }
-                        }
-                        if (!tooClose) { xPos_c[idx] = xi; yPos_c[idx] = yi; placed = true; }
-                    }
-                }
-
-                if (!placed) {
-                    for (let att = 0; att < 1000 && !placed; att++) {
-                        let r = minR + (maxR - minR) * Math.sqrt(random());
-                        let theta = qLo[q] + qRange * random();
-                        let xi = cx + r * Math.cos(theta);
-                        let yi = cy + r * Math.sin(theta);
-                        if (Math.abs(xi - cx) < S || Math.abs(yi - cy) < S) continue;
-                        let tooClose = false;
-                        for (let j = 0; j < idx; j++) {
-                            if (Math.hypot(xi - xPos_c[j], yi - yPos_c[j]) < relaxDist) { tooClose = true; break; }
-                        }
-                        if (!tooClose) { xPos_c[idx] = xi; yPos_c[idx] = yi; placed = true; }
-                    }
-                }
-
-                if (!placed) {
-                    let bestMinD = -1, bestXi = 0, bestYi = 0;
-                    for (let att = 0; att < 2000; att++) {
-                        let r = minR + (maxR - minR) * Math.sqrt(random());
-                        let theta = qLo[q] + qRange * random();
-                        let xi = cx + r * Math.cos(theta);
-                        let yi = cy + r * Math.sin(theta);
-                        if (Math.abs(xi - cx) < S || Math.abs(yi - cy) < S) continue;
-                        let minD = Infinity;
-                        for (let j = 0; j < idx; j++) {
-                            let d = Math.hypot(xi - xPos_c[j], yi - yPos_c[j]);
-                            if (d < minD) minD = d;
-                        }
-                        if (minD > bestMinD) { bestMinD = minD; bestXi = xi; bestYi = yi; }
-                    }
-                    xPos_c[idx] = bestXi; yPos_c[idx] = bestYi;
-                }
-                idx++;
+    // 枚举从 RING_SLOTS 个槽位中选 nItems 个的所有组合。
+    // 用标称角（不含旋转）判断左右半区；要求左右各至少一个色块，
+    // 保证变化觉察 / 变化定位任务左右半区都有可点色块。
+    const baseDeg = RING_SLOT_STEP / 2;   // 22.5°，避开水平/垂直坐标轴
+    const combos = [];
+    const collect = (start, picked) => {
+        if (picked.length === nItems) {
+            let left = 0;
+            for (const i of picked) {
+                const nominalA = (baseDeg + i * RING_SLOT_STEP) * Math.PI / 180;
+                if (Math.cos(nominalA) < 0) left++;
             }
-        }
-
-        let dists = [];
-        for (let a = 0; a < nItems - 1; a++) {
-            for (let b = a + 1; b < nItems; b++) {
-                dists.push(Math.hypot(xPos_c[a] - xPos_c[b], yPos_c[a] - yPos_c[b]));
+            if (left < 1 || nItems - left < 1) return;
+            const gaps = [];
+            for (let k = 0; k < nItems; k++) {
+                const a = picked[k];
+                const b = k + 1 < nItems ? picked[k + 1] : picked[0] + RING_SLOTS;
+                gaps.push(b - a);
             }
+            const mean = RING_SLOTS / nItems;
+            const uneven = gaps.reduce((s, g) => s + (g - mean) ** 2, 0);
+            combos.push({ indices: picked.slice(), uneven, sig: picked.join(',') });
+            return;
         }
-        let angles = [];
-        for (let i = 0; i < nItems; i++) {
-            angles.push(Math.atan2(yPos_c[i] - cy, xPos_c[i] - cx));
+        for (let i = start; i < RING_SLOTS; i++) {
+            picked.push(i); collect(i + 1, picked); picked.pop();
         }
-        angles = angles.map(a => (a + 2 * Math.PI) % (2 * Math.PI));
-        angles.sort((a, b) => a - b);
-        let angularGaps = [];
-        for (let i = 0; i < nItems; i++) {
-            let next = i < nItems - 1 ? angles[i + 1] : angles[0] + 2 * Math.PI;
-            angularGaps.push(next - angles[i]);
-        }
+    };
+    collect(0, []);
 
-        let minD = Math.min(...dists);
-        let meanD = dists.reduce((s, d) => s + d, 0) / dists.length;
-        let stdD = Math.sqrt(dists.reduce((s, d) => s + (d - meanD) ** 2, 0) / (dists.length - 1));
-        let meanG = angularGaps.reduce((s, g) => s + g, 0) / angularGaps.length;
-        let stdG = Math.sqrt(angularGaps.reduce((s, g) => s + (g - meanG) ** 2, 0) / (angularGaps.length - 1));
-
-        let score = minD - 0.4 * stdD - 40 * stdG;
-        if (score > bestScore) {
-            bestScore = score;
-            bestXPos = [...xPos_c];
-            bestYPos = [...yPos_c];
-        }
+    // 只保留最均匀的一批组合，再随机挑选，且尽量避开上一次的组合。
+    const bestUneven = Math.min(...combos.map(c => c.uneven));
+    let pool = combos.filter(c => c.uneven === bestUneven);
+    if (pool.length > 1 && lastRingSignature !== null) {
+        const fresh = pool.filter(c => c.sig !== lastRingSignature);
+        if (fresh.length) pool = fresh;
     }
+    const chosen = pool[randInt(0, pool.length - 1)];
+    lastRingSignature = chosen.sig;
 
-    let locs = [];
-    for (let i = 0; i < nItems; i++) {
-        locs.push({ x: bestXPos[i], y: bestYPos[i] });
-    }
-    return locs;
+    // 整圈随机旋转：幅度小于半槽距，槽位不跨轴线；使绝对角度逐试次变化。
+    const rotation = (random() - 0.5) * RING_SLOT_STEP * Math.PI / 180;
+
+    const picked = chosen.indices.slice();
+    shuffleArray(picked);
+    return picked.map(idx => {
+        const a = (baseDeg + idx * RING_SLOT_STEP) * Math.PI / 180 + rotation;
+        return { x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) };
+    });
 }
+
